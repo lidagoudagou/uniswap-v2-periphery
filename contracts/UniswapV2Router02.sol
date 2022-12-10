@@ -9,14 +9,19 @@ import './libraries/SafeMath.sol';
 import './interfaces/IERC20.sol';
 import './interfaces/IWETH.sol';
 
+// 02版本相比较与01版本，增加了几个支持交税费用的函数，其他基本一致，直接看02版本既可，后续调用也使用02调用
+// Router合约是无状态的并且不拥有任何代币，因此必要的时候它们可以安全升级。该合约地址不持有任何代币。
 contract UniswapV2Router02 is IUniswapV2Router02 {
     using SafeMath for uint;
 
     address public immutable override factory;
     address public immutable override WETH;
 
+    // 修饰符
+    // 确保交易在ddl之前被执行，否则回滚
     modifier ensure(uint deadline) {
         require(deadline >= block.timestamp, 'UniswapV2Router: EXPIRED');
+        // 执行被修饰的方法
         _;
     }
 
@@ -30,6 +35,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
     }
 
     // **** ADD LIQUIDITY ****
+    // 只用来计算最优的流动性投入数量，并不进行真实的流动性交易
     function _addLiquidity(
         address tokenA,
         address tokenB,
@@ -42,15 +48,21 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
         if (IUniswapV2Factory(factory).getPair(tokenA, tokenB) == address(0)) {
             IUniswapV2Factory(factory).createPair(tokenA, tokenB);
         }
+        // 获取流动性池中的乘数
         (uint reserveA, uint reserveB) = UniswapV2Library.getReserves(factory, tokenA, tokenB);
         if (reserveA == 0 && reserveB == 0) {
             (amountA, amountB) = (amountADesired, amountBDesired);
         } else {
+            // 使用希望放入的A代币数量，计算出最优B代币放入的数量
             uint amountBOptimal = UniswapV2Library.quote(amountADesired, reserveA, reserveB);
+            // 最优B代币放入的数量 要小于希望B放入的数量，否则就超过用户心里预期了
             if (amountBOptimal <= amountBDesired) {
+                // 要求最优放入的数量要高于最低投入B的数量，否则交易回滚
                 require(amountBOptimal >= amountBMin, 'UniswapV2Router: INSUFFICIENT_B_AMOUNT');
                 (amountA, amountB) = (amountADesired, amountBOptimal);
             } else {
+                // 如果B代币最优放入数量不符合用户预期放入的数量条件，则尝试用希望放入的B数量，进行计算最优放入的A数量
+                // 接下来同样进行A的一些条件校验，不符合要求则进行交易回滚
                 uint amountAOptimal = UniswapV2Library.quote(amountBDesired, reserveB, reserveA);
                 assert(amountAOptimal <= amountADesired);
                 require(amountAOptimal >= amountAMin, 'UniswapV2Router: INSUFFICIENT_A_AMOUNT');
@@ -58,6 +70,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
             }
         }
     }
+    // 外部调用函数，增加流动性供给
     function addLiquidity(
         address tokenA,
         address tokenB,
@@ -67,13 +80,17 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
         uint amountBMin,
         address to,
         uint deadline
-    ) external virtual override ensure(deadline) returns (uint amountA, uint amountB, uint liquidity) {
+    ) external virtual override ensure(deadline) returns (uint amountA, uint amountB, uint liquidity) {// override 重写修饰符
+    // ensure(deadline) 这个被函数修饰符修饰过的函数，可以用这种方式作用于addLiquidity函数，在函数执行前检查ensure函数里面设置的条件
+        // 计算实际要增加的流动性数量
         (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
         TransferHelper.safeTransferFrom(tokenA, msg.sender, pair, amountA);
         TransferHelper.safeTransferFrom(tokenB, msg.sender, pair, amountB);
         liquidity = IUniswapV2Pair(pair).mint(to);
     }
+    // WETH代币与其他代币pair的流动性供给
+    // 相较于上面那个，只是WETH的token地址默认写在了这个方法逻辑内，不需要再传了
     function addLiquidityETH(
         address token,
         uint amountTokenDesired,
@@ -86,12 +103,13 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
             token,
             WETH,
             amountTokenDesired,
-            msg.value,
+            msg.value,// TODO 为什么WETH的amountWETHDesired要通过msg.value获取？
             amountTokenMin,
             amountETHMin
         );
         address pair = UniswapV2Library.pairFor(factory, token, WETH);
         TransferHelper.safeTransferFrom(token, msg.sender, pair, amountToken);
+        // WETH的代币转移方式与其他erc20代币转移方式不同 TODO 特别关注
         IWETH(WETH).deposit{value: amountETH}();
         assert(IWETH(WETH).transfer(pair, amountETH));
         liquidity = IUniswapV2Pair(pair).mint(to);
@@ -100,6 +118,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
     }
 
     // **** REMOVE LIQUIDITY ****
+    // 流动性去除，相当于提取代币操作，此操作调用v2-core进行流动性提取与uni代币销毁操作
     function removeLiquidity(
         address tokenA,
         address tokenB,
@@ -110,6 +129,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
         uint deadline
     ) public virtual override ensure(deadline) returns (uint amountA, uint amountB) {
         address pair = UniswapV2Library.pairFor(factory, tokenA, tokenB);
+        // 这里是怎么调用到pair合约的呀？看不懂 TODO ，在pair合约里面没找到transferFrom这个方法的实现，只在IPair的合约中找到了这个方法的定义，但是没也没有找到实现
         IUniswapV2Pair(pair).transferFrom(msg.sender, pair, liquidity); // send liquidity to pair
         (uint amount0, uint amount1) = IUniswapV2Pair(pair).burn(to);
         (address token0,) = UniswapV2Library.sortTokens(tokenA, tokenB);
@@ -138,6 +158,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
         IWETH(WETH).withdraw(amountETH);
         TransferHelper.safeTransferETH(to, amountETH);
     }
+    // 由授权的合约进行自动调用来去除流动性
     function removeLiquidityWithPermit(
         address tokenA,
         address tokenB,
