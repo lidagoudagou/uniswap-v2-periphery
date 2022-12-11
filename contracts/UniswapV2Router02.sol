@@ -103,7 +103,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
             token,
             WETH,
             amountTokenDesired,
-            msg.value,// TODO 为什么WETH的amountWETHDesired要通过msg.value获取？
+            msg.value,// 这是区块与交易属性的保留字，msg.value是随消息发送的wei数量。单位是wei  
             amountTokenMin,
             amountETHMin
         );
@@ -242,6 +242,8 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
             );
         }
     }
+    // 投入amountIn来交factory中的另一种代币
+    // path代表交换路径
     function swapExactTokensForTokens(
         uint amountIn,
         uint amountOutMin,
@@ -256,7 +258,7 @@ contract UniswapV2Router02 is IUniswapV2Router02 {
         );
         _swap(amounts, path, to);
     }
-    function swapTokensForExactTokens(
+         function swapTokensForExactTokens(
         uint amountOut,
         uint amountInMax,
         address[] calldata path,
